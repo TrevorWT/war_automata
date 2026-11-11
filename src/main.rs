@@ -11,6 +11,21 @@ struct Layout {
     sq_size: f32,
 }
 
+fn compute_layout() -> Layout {
+    let squares = SQUARES as f32;
+    let game_size = screen_width().min(screen_height());
+    let board_size = game_size - 2. * PAD;
+    let offset_x = (screen_width() - game_size) / 2. + PAD;
+    let offset_y = (screen_height() - game_size) / 2. + PAD;
+    let sq_size = board_size / squares;
+    Layout {
+        offset_x,
+        offset_y,
+        board_size,
+        sq_size,
+    }
+}
+
 fn draw_grid(layout: &Layout) {
     draw_rectangle(
         layout.offset_x,
@@ -44,21 +59,6 @@ fn draw_grid(layout: &Layout) {
             THICKNESS,
             BLACK,
         );
-    }
-}
-
-fn compute_layout() -> Layout {
-    let squares = SQUARES as f32;
-    let game_size = screen_width().min(screen_height());
-    let board_size = game_size - 2. * PAD;
-    let offset_x = (screen_width() - game_size) / 2. + PAD;
-    let offset_y = (screen_height() - game_size) / 2. + PAD;
-    let sq_size = board_size / squares;
-    Layout {
-        offset_x,
-        offset_y,
-        board_size,
-        sq_size,
     }
 }
 
