@@ -1,34 +1,34 @@
 /// A `Band::max_dist` that covers the whole board, however large.
 pub const ANYWHERE: u32 = u32::MAX;
 
-/// todo
+/// What a unit does when one of its bands applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// todo
+    /// Step to a free neighboring cell strictly closer to the nearest enemy.
     Advance,
-    /// todo
+    /// Step away from the nearest enemy. Not implemented yet.
     Retreat,
-    /// todo
+    /// Step to a free neighboring cell at the same distance from the nearest enemy.
     Sidestep,
-    /// todo
+    /// Step toward the nearest ally. Not implemented yet.
     FollowAlly,
-    /// todo
+    /// Stay put. Ends the band walk without moving.
     Hold,
 }
 
-/// todo
+/// One of the two sides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Team {
-    /// todo
+    /// Starts on the right half of the board.
     Red,
-    /// todo
+    /// Starts on the left half of the board.
     Blue,
 }
 
-/// todo
+/// The type of a unit, which decides its stats and behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnitKind {
-    /// todo
+    /// Plain fighter: damages touching enemies.
     Basic,
     /// Fights no one but heals touching allies. Moves like `Basic` for now,
     /// until `FollowAlly` and `Retreat` are implemented.
@@ -51,43 +51,43 @@ const CHASE: &[Band] = &[
     },
 ];
 
-/// todo
+/// A distance range and the action taken inside it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Band {
-    /// todo
+    /// Applies when the nearest enemy is at most this far away (Chebyshev).
     pub max_dist: u32,
-    /// todo
+    /// What the unit does when this band applies.
     pub action: Action,
 }
 
-/// todo
+/// Fixed numbers that define a unit kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
-    /// todo
+    /// Health a unit starts with and can never be healed above.
     pub max_health: u32,
-    /// todo
+    /// Budget points needed to place one.
     pub cost: u32,
-    /// todo
+    /// Damage dealt each round to every touching enemy.
     pub strength: u32,
-    /// todo
+    /// Health restored each round to every touching ally.
     pub heal: u32,
     /// Extra strength each touching ally deals this round (only allies that
     /// already have strength gain it).
     pub boost: u32,
     /// Whether this unit flips its weakest touching enemy to its team each round.
     pub converts: bool,
-    /// todo
+    /// Movement rules in priority order. The first band that applies and can act wins.
     pub bands: &'static [Band],
 }
 
-/// todo
+/// A unit on the board.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unit {
-    /// todo
+    /// The side it fights for.
     pub team: Team,
-    /// todo
+    /// Its type.
     pub kind: UnitKind,
-    /// todo
+    /// Current health. The unit is removed at 0.
     pub health: u32,
 }
 
@@ -110,7 +110,7 @@ impl UnitKind {
         }
     }
 
-    /// todo
+    /// The fixed stats for this kind.
     pub fn stats(self) -> Stats {
         match self {
             UnitKind::Basic => Stats {

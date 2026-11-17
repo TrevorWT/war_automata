@@ -1,20 +1,21 @@
 use crate::board::Board;
 use crate::unit::{Team, Unit, UnitKind};
 
-/// todo
+/// Why a placement or removal was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaceError {
-    /// todo
+    /// The cell is off the board.
     OutOfBounds,
-    /// todo
+    /// The cell already holds a unit.
     Occupied,
-    /// todo
+    /// The cell holds no unit to remove.
     Unoccupied,
-    /// todo
+    /// The team cannot afford the unit.
     OverBudget,
 }
 
-/// todo
+/// The placement phase: a board plus each team's remaining budget.
+/// The right half of the board belongs to Red, the left half to Blue.
 pub struct Setup {
     board: Board,
     red_budget: u32,
@@ -22,6 +23,7 @@ pub struct Setup {
 }
 
 impl Setup {
+    /// An empty setup where each team starts with `budget` points.
     pub fn new(width: usize, height: usize, budget: u32) -> Setup {
         Setup {
             board: Board::new(width, height),
@@ -30,6 +32,25 @@ impl Setup {
         }
     }
 
+    /// The board as placed so far.
+    pub fn board(&self) -> &Board {
+        &self.board
+    }
+
+    /// Points `team` still has to spend.
+    pub fn budget(&self, team: Team) -> u32 {
+        match team {
+            Team::Red => self.red_budget,
+            Team::Blue => self.blue_budget,
+        }
+    }
+
+    /// Hands over the finished board to start a battle.
+    pub fn into_board(self) -> Board {
+        self.board
+    }
+
+    /// Places a `kind` unit for the team that owns the column and spends its cost.
     pub fn place(&mut self, row: usize, col: usize, kind: UnitKind) -> Result<(), PlaceError> {
         if self.board.index(row, col).is_none() {
             return Err(PlaceError::OutOfBounds);
@@ -66,6 +87,7 @@ impl Setup {
         Ok(())
     }
 
+    /// Removes the unit at `(row, col)` and refunds its cost.
     pub fn remove(&mut self, row: usize, col: usize) -> Result<(), PlaceError> {
         if self.board.index(row, col).is_none() {
             return Err(PlaceError::OutOfBounds);
@@ -96,6 +118,23 @@ mod tests {
 
     fn team_at(setup: &Setup, row: usize, col: usize) -> Team {
         setup.board.get(row, col).unwrap().team
+    }
+
+    #[test]
+    fn budget_drops_on_place_and_returns_on_remove() {
+        let mut s = setup();
+        s.place(0, 0, UnitKind::Healer).unwrap();
+        assert_eq!(s.budget(Team::Blue), 10 - UnitKind::Healer.stats().cost);
+        assert_eq!(s.budget(Team::Red), 10);
+        s.remove(0, 0).unwrap();
+        assert_eq!(s.budget(Team::Blue), 10);
+    }
+
+    #[test]
+    fn board_getter_sees_placed_units() {
+        let mut s = setup();
+        s.place(1, 1, UnitKind::Basic).unwrap();
+        assert!(s.board().get(1, 1).is_some());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use crate::unit::Unit;
 
-/// todo
+/// A rectangular grid where each cell holds at most one unit.
+#[derive(Clone)]
 pub struct Board {
     width: usize,
     height: usize,
@@ -8,6 +9,7 @@ pub struct Board {
 }
 
 impl Board {
+    /// An empty board of `width` columns by `height` rows.
     pub fn new(width: usize, height: usize) -> Board {
         Board {
             width,
@@ -16,14 +18,17 @@ impl Board {
         }
     }
 
+    /// Number of columns.
     pub fn width(&self) -> usize {
         self.width
     }
 
+    /// Number of rows.
     pub fn height(&self) -> usize {
         self.height
     }
 
+    /// Position of `(row, col)` in the cell vector, or `None` if off the board.
     pub(crate) fn index(&self, row: usize, col: usize) -> Option<usize> {
         if row < self.height && col < self.width {
             return Some(row * self.width + col);
@@ -31,17 +36,33 @@ impl Board {
         None
     }
 
+    /// The unit at `(row, col)`. `None` if the cell is empty or off the board.
     pub fn get(&self, row: usize, col: usize) -> Option<Unit> {
         let i = self.index(row, col)?;
         self.cells[i]
     }
 
+    /// Puts `unit` (or clears the cell with `None`). Returns `false` if off the board.
     pub fn set(&mut self, row: usize, col: usize, unit: Option<Unit>) -> bool {
         let Some(i) = self.index(row, col) else {
             return false;
         };
         self.cells[i] = unit;
         true
+    }
+
+    /// In-bounds cells touching `(row, col)` (up to 8), in row-major order.
+    /// The cell itself is excluded.
+    pub fn neighbors(&self, row: usize, col: usize) -> Vec<(usize, usize)> {
+        let mut cells = Vec::with_capacity(8);
+        for r in row.saturating_sub(1)..=row + 1 {
+            for c in col.saturating_sub(1)..=col + 1 {
+                if (r, c) != (row, col) && self.index(r, c).is_some() {
+                    cells.push((r, c));
+                }
+            }
+        }
+        cells
     }
 }
 
@@ -109,6 +130,46 @@ mod tests {
         let board = Board::new(3, 3);
         assert_eq!(board.get(3, 0), None);
         assert_eq!(board.get(0, 3), None);
+    }
+
+    #[test]
+    fn neighbors_corner_has_three() {
+        let board = Board::new(4, 4);
+        assert_eq!(board.neighbors(0, 0), vec![(0, 1), (1, 0), (1, 1)]);
+        assert_eq!(board.neighbors(3, 3).len(), 3);
+    }
+
+    #[test]
+    fn neighbors_edge_has_five() {
+        let board = Board::new(4, 4);
+        assert_eq!(board.neighbors(0, 2).len(), 5);
+        assert_eq!(board.neighbors(2, 0).len(), 5);
+        assert_eq!(board.neighbors(3, 1).len(), 5);
+        assert_eq!(board.neighbors(1, 3).len(), 5);
+    }
+
+    #[test]
+    fn neighbors_middle_has_eight() {
+        let board = Board::new(4, 4);
+        assert_eq!(
+            board.neighbors(1, 1),
+            vec![
+                (0, 0),
+                (0, 1),
+                (0, 2),
+                (1, 0),
+                (1, 2),
+                (2, 0),
+                (2, 1),
+                (2, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn neighbors_excludes_self() {
+        let board = Board::new(3, 3);
+        assert!(!board.neighbors(1, 1).contains(&(1, 1)));
     }
 
     #[test]
