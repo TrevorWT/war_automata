@@ -18,6 +18,8 @@ pub enum PlaceError {
 /// The right half of the board belongs to Red, the left half to Blue.
 pub struct Setup {
     board: Board,
+    /// Points each team started with. Spent points are `limit - remaining`.
+    limit: u32,
     red_budget: u32,
     blue_budget: u32,
 }
@@ -27,6 +29,7 @@ impl Setup {
     pub fn new(width: usize, height: usize, budget: u32) -> Setup {
         Setup {
             board: Board::new(width, height),
+            limit: budget,
             red_budget: budget,
             blue_budget: budget,
         }
@@ -35,6 +38,28 @@ impl Setup {
     /// The board as placed so far.
     pub fn board(&self) -> &Board {
         &self.board
+    }
+
+    /// Total points each team gets to spend.
+    pub fn limit(&self) -> u32 {
+        self.limit
+    }
+
+    /// The lowest limit allowed right now: the most either team has already spent.
+    pub fn min_limit(&self) -> u32 {
+        (self.limit - self.red_budget).max(self.limit - self.blue_budget)
+    }
+
+    /// Sets each team's total budget, keeping what they have already spent.
+    /// A limit below `min_limit` is raised to it. Returns the limit now in effect.
+    pub fn set_limit(&mut self, limit: u32) -> u32 {
+        let new = limit.max(self.min_limit());
+        let red_spent = self.limit - self.red_budget;
+        let blue_spent = self.limit - self.blue_budget;
+        self.red_budget = new - red_spent;
+        self.blue_budget = new - blue_spent;
+        self.limit = new;
+        new
     }
 
     /// Points `team` still has to spend.
@@ -128,6 +153,36 @@ mod tests {
         assert_eq!(s.budget(Team::Red), 10);
         s.remove(0, 0).unwrap();
         assert_eq!(s.budget(Team::Blue), 10);
+    }
+
+    #[test]
+    fn raising_the_limit_adds_to_remaining_budget() {
+        let mut s = setup();
+        s.place(0, 0, UnitKind::Basic).unwrap();
+        assert_eq!(s.set_limit(20), 20);
+        assert_eq!(s.limit(), 20);
+        assert_eq!(s.budget(Team::Blue), 19);
+        assert_eq!(s.budget(Team::Red), 20);
+    }
+
+    #[test]
+    fn lowering_the_limit_keeps_spent_points() {
+        let mut s = setup();
+        s.place(0, 0, UnitKind::Commander).unwrap();
+        assert_eq!(s.set_limit(7), 7);
+        assert_eq!(s.budget(Team::Blue), 7 - UnitKind::Commander.stats().cost);
+        assert!(s.board().get(0, 0).is_some());
+    }
+
+    #[test]
+    fn limit_cannot_drop_below_what_is_spent() {
+        let mut s = setup();
+        let cost = UnitKind::Commander.stats().cost;
+        s.place(0, 0, UnitKind::Commander).unwrap();
+        assert_eq!(s.min_limit(), cost);
+        assert_eq!(s.set_limit(0), cost);
+        assert_eq!(s.budget(Team::Blue), 0);
+        assert_eq!(s.budget(Team::Red), cost);
     }
 
     #[test]

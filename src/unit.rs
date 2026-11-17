@@ -25,6 +25,16 @@ pub enum Team {
     Blue,
 }
 
+impl Team {
+    /// The other side.
+    pub fn opponent(self) -> Team {
+        match self {
+            Team::Red => Team::Blue,
+            Team::Blue => Team::Red,
+        }
+    }
+}
+
 /// The type of a unit, which decides its stats and behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnitKind {
@@ -33,9 +43,10 @@ pub enum UnitKind {
     /// Fights no one but heals touching allies. Moves like `Basic` for now,
     /// until `FollowAlly` and `Retreat` are implemented.
     Healer,
-    /// Deals no damage. Each round, converts the weakest touching enemy to its team.
+    /// Deals no damage. Each round, converts every touching enemy to its team.
     Priest,
-    /// Tough fighter. Each touching ally deals +1 damage while it stands next to it.
+    /// Tough fighter. Each touching ally deals +1 damage and heals +1 more (if it
+    /// already damages or heals) while it stands next to it.
     Commander,
 }
 
@@ -71,10 +82,10 @@ pub struct Stats {
     pub strength: u32,
     /// Health restored each round to every touching ally.
     pub heal: u32,
-    /// Extra strength each touching ally deals this round (only allies that
-    /// already have strength gain it).
+    /// Extra damage and healing each touching ally gives this round (only allies
+    /// that already deal damage or heal gain it).
     pub boost: u32,
-    /// Whether this unit flips its weakest touching enemy to its team each round.
+    /// Whether this unit flips every touching enemy to its team each round.
     pub converts: bool,
     /// Movement rules in priority order. The first band that applies and can act wins.
     pub bands: &'static [Band],
@@ -132,8 +143,8 @@ impl UnitKind {
                 bands: CHASE,
             },
             UnitKind::Priest => Stats {
-                max_health: 3,
-                cost: 3,
+                max_health: 5,
+                cost: 4,
                 strength: 0,
                 heal: 0,
                 boost: 0,
@@ -141,8 +152,8 @@ impl UnitKind {
                 bands: CHASE,
             },
             UnitKind::Commander => Stats {
-                max_health: 8,
-                cost: 5,
+                max_health: 6,
+                cost: 6,
                 strength: 1,
                 heal: 0,
                 boost: 1,

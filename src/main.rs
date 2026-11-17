@@ -1,14 +1,22 @@
 use macroquad::prelude::*;
-use war_automata::{Battle, Board, Outcome, ROUND_LIMIT, Setup, Team, UnitKind};
+use war_automata::{
+    Battle, Board, Effect, EffectKind, Outcome, ROUND_LIMIT, Setup, Team, UnitKind, is_boosted,
+};
 
 const SQUARES: usize = 32;
 const PAD: f32 = 12.;
 const THICKNESS: f32 = 1.;
 const ROUND_SECONDS: f32 = 0.15;
+const FLASH_SECONDS: f32 = 0.25;
 const STATUS_FONT: u16 = 22;
 const STATUS_LINE: f32 = 28.;
-const STATUS_LINES: f32 = 3.;
+const STATUS_LINES: f32 = 5.;
+const REPEAT_MAX: u32 = 1000;
+/// Seconds per frame spent simulating while repeating, so the window stays responsive.
+const FRAME_BUDGET: f64 = 0.01;
 const BUDGET: u32 = 30;
+const BUDGET_STEP: u32 = 5;
+const BUDGET_MAX: u32 = 200;
 const NUMBER_KEYS: [KeyCode; 4] = [KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4];
 
 const BACKGROUND: Color = Color::new(0.11, 0.12, 0.14, 1.);
@@ -139,8 +147,8 @@ fn kind_note(kind: UnitKind) -> &'static str {
     match kind {
         UnitKind::Basic => "fights touching enemies",
         UnitKind::Healer => "heals touching allies (white outline)",
-        UnitKind::Priest => "converts weakest touching enemy (gold outline)",
-        UnitKind::Commander => "tough, +1 damage to touching allies (black outline)",
+        UnitKind::Priest => "converts all touching enemies (gold outline)",
+        UnitKind::Commander => "tough, +1 damage and +1 healing to touching allies (black outline)",
     }
 }
 
@@ -182,13 +190,18 @@ fn draw_units(board: &Board, layout: &Layout) {
                 (x + (layout.sq_size - size.width) / 2.).floor(),
                 (y + (layout.sq_size + size.offset_y) / 2.).floor(),
                 font as f32,
-                WHITE,
+                // Gold health marks a unit a Commander is boosting.
+                if is_boosted(board, row, col) {
+                    GOLD
+                } else {
+                    WHITE
+                },
             );
         }
     }
 }
 
-fn battle_status(battle: &Battle, running: bool) -> Vec<String> {
+fn battle_status(battle: &Battle, running: bool, done: u32, total: u32) -> Vec<String> {
     let state = match battle.outcome() {
         Outcome::Won(Team::Red) => "Red wins",
         Outcome::Won(Team::Blue) => "Blue wins",
@@ -196,20 +209,31 @@ fn battle_status(battle: &Battle, running: bool) -> Vec<String> {
         Outcome::Ongoing if running => "Running",
         Outcome::Ongoing => "Paused",
     };
+    // Only repeated runs show how far along they are.
+    let game = match total {
+        1 => String::new(),
+        _ if done >= total => format!("Finished {total} games | "),
+        _ => format!("Game {}/{} | ", done + 1, total),
+    };
     vec![
-        format!("Round {}/{} | {}", battle.round_count(), ROUND_LIMIT, state),
-        "Space: run/pause  N: step  R: back to placing".to_string(),
+        format!(
+            "{game}Round {}/{} | {}",
+            battle.round_count(),
+            ROUND_LIMIT,
+            state
+        ),
+        "Space: run/pause  N: step  R: restart  S: setup".to_string(),
     ]
 }
 
-fn placing_status(setup: &Setup, kind: UnitKind) -> Vec<String> {
+fn placing_status(setup: &Setup, kind: UnitKind, repeat: u32) -> Vec<String> {
     vec![
         format!(
-            "Placing | Blue {}/{} | Red {}/{}",
+            "Setup | Blue {}/{} | Red {}/{}",
             setup.budget(Team::Blue),
-            BUDGET,
+            setup.limit(),
             setup.budget(Team::Red),
-            BUDGET
+            setup.limit()
         ),
         format!(
             "Unit: {} (cost {}): {}",
@@ -218,9 +242,10 @@ fn placing_status(setup: &Setup, kind: UnitKind) -> Vec<String> {
             kind_note(kind)
         ),
         format!(
-            "Tab/1-{}: switch  Left: add  Right: remove  Space: start",
+            "Tab/1-{}: unit  Left: add  Right: remove  +/-: budget",
             UnitKind::ALL.len()
         ),
+        format!("[/]: repeat x{repeat} (Shift: 10)  Space: start"),
     ]
 }
 
@@ -250,6 +275,121 @@ fn pick_kind(mut index: usize) -> usize {
     index
 }
 
+/// Results of finished battles, kept across resets so averages can build up.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Tally {
+    red: u32,
+    blue: u32,
+    draws: u32,
+}
+
+impl Tally {
+    /// Adds a finished battle. An ongoing battle is not counted.
+    fn record(&mut self, outcome: Outcome) {
+        match outcome {
+            Outcome::Won(Team::Red) => self.red += 1,
+            Outcome::Won(Team::Blue) => self.blue += 1,
+            Outcome::Draw => self.draws += 1,
+            Outcome::Ongoing => {}
+        }
+    }
+
+    fn games(&self) -> u32 {
+        self.red + self.blue + self.draws
+    }
+
+    /// Whole-number percent of all games, or 0 before any have finished.
+    fn percent(&self, count: u32) -> u32 {
+        match self.games() {
+            0 => 0,
+            games => (count as f32 * 100. / games as f32).round() as u32,
+        }
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "Wins - Red {} ({}%) | Blue {} ({}%) | Draws {} | Games {} | C: clear",
+            self.red,
+            self.percent(self.red),
+            self.blue,
+            self.percent(self.blue),
+            self.draws,
+            self.games()
+        )
+    }
+}
+
+/// A short-lived highlight on a cell, so rounds are easy to follow.
+struct Flash {
+    effect: Effect,
+    /// Seconds since the flash started.
+    age: f32,
+}
+
+/// A battle on a copy of the placed army. Each call advances `seed`, so every
+/// game breaks ties differently even when many start within the same instant.
+/// The first mover alternates by game number: game 1 starts with Red, game 2
+/// with Blue, and so on, so neither side keeps the opening advantage.
+fn new_battle(setup: &Setup, seed: &mut u64, games_played: u32) -> Battle {
+    *seed = seed.wrapping_add(1);
+    let first = if games_played % 2 == 0 {
+        Team::Red
+    } else {
+        Team::Blue
+    };
+    Battle::with_seed(setup.board().clone(), *seed).with_first_mover(first)
+}
+
+/// Plays one round and starts a flash for everything that happened in it.
+fn play_round(battle: &mut Battle, flashes: &mut Vec<Flash>) {
+    let before = battle.round_count();
+    battle.round();
+    // A finished battle ignores `round`, so don't replay the last round's effects.
+    if battle.round_count() != before {
+        flashes.extend(
+            battle
+                .effects()
+                .iter()
+                .map(|&effect| Flash { effect, age: 0. }),
+        );
+    }
+}
+
+fn flash_color(kind: EffectKind) -> Color {
+    match kind {
+        EffectKind::Damage => WHITE,
+        EffectKind::Heal => Color::new(0.2, 0.85, 0.35, 1.),
+        EffectKind::Death => WHITE, // overridden by the team color in `draw_flashes`
+        EffectKind::Convert => GOLD,
+    }
+}
+
+/// Draws each flash as a square over its cell that fades out. Deaths grow
+/// past the cell edges, since the unit is already gone.
+fn draw_flashes(flashes: &[Flash], layout: &Layout) {
+    for flash in flashes {
+        let progress = flash.age / FLASH_SECONDS;
+        // A death burst takes the color of the team that lost the unit.
+        let mut color = match flash.effect.kind {
+            EffectKind::Death => team_color(flash.effect.team),
+            kind => flash_color(kind),
+        };
+        color.a = (1. - progress) * 0.85;
+        let grow = if flash.effect.kind == EffectKind::Death {
+            progress * layout.sq_size * 0.5
+        } else {
+            0.
+        };
+        draw_rectangle(
+            layout.offset_x + flash.effect.col as f32 * layout.sq_size - grow,
+            layout.offset_y + flash.effect.row as f32 * layout.sq_size - grow,
+            layout.sq_size + 2. * grow,
+            layout.sq_size + 2. * grow,
+            color,
+        );
+    }
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
     let mut setup = Setup::new(SQUARES, SQUARES, BUDGET);
@@ -258,10 +398,30 @@ async fn main() {
     let mut battle: Option<Battle> = None;
     let mut running = false;
     let mut timer = 0.;
+    let mut flashes: Vec<Flash> = Vec::new();
+    // Win record across battles. It survives resets; press C to clear it.
+    let mut tally = Tally::default();
+    // Whether the current battle's result is already in the tally.
+    let mut recorded = false;
+    // How many games Space or R plays in a row, and how far the current run is.
+    let mut repeat_count: u32 = 1;
+    let mut batch_total: u32 = 1;
+    let mut batch_done: u32 = 0;
+    // Each game takes the next seed, so quick back-to-back games still differ.
+    let mut seed = (macroquad::miniquad::date::now() * 1000.) as u64;
     loop {
         let layout = compute_layout();
+        let dt = get_frame_time();
+        for flash in &mut flashes {
+            flash.age += dt;
+        }
+        flashes.retain(|flash| flash.age < FLASH_SECONDS);
 
-        let status = match battle.as_mut() {
+        if is_key_pressed(KeyCode::C) {
+            tally = Tally::default();
+        }
+
+        let mut status = match battle.as_mut() {
             None => {
                 kind_index = pick_kind(kind_index);
                 let kind = UnitKind::ALL[kind_index];
@@ -275,12 +435,34 @@ async fn main() {
                         setup.remove(row, col).ok();
                     }
                 }
-                if is_key_pressed(KeyCode::Space) {
-                    battle = Some(Battle::new(setup.board().clone()));
-                    running = false;
-                    timer = 0.;
+                if is_key_pressed(KeyCode::Equal) || is_key_pressed(KeyCode::KpAdd) {
+                    setup.set_limit((setup.limit() + BUDGET_STEP).min(BUDGET_MAX));
                 }
-                placing_status(&setup, kind)
+                if is_key_pressed(KeyCode::Minus) || is_key_pressed(KeyCode::KpSubtract) {
+                    setup.set_limit(setup.limit().saturating_sub(BUDGET_STEP));
+                }
+                let step = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) {
+                    10
+                } else {
+                    1
+                };
+                if is_key_pressed(KeyCode::RightBracket) {
+                    repeat_count = (repeat_count + step).min(REPEAT_MAX);
+                }
+                if is_key_pressed(KeyCode::LeftBracket) {
+                    repeat_count = repeat_count.saturating_sub(step).max(1);
+                }
+                if is_key_pressed(KeyCode::Space) {
+                    battle = Some(new_battle(&setup, &mut seed, tally.games()));
+                    // Several games run straight away; a single game starts paused.
+                    running = repeat_count > 1;
+                    recorded = false;
+                    batch_done = 0;
+                    batch_total = repeat_count;
+                    timer = 0.;
+                    flashes.clear();
+                }
+                placing_status(&setup, kind, repeat_count)
             }
             Some(b) => {
                 if is_key_pressed(KeyCode::Space) {
@@ -289,30 +471,74 @@ async fn main() {
                 if is_key_pressed(KeyCode::N) {
                     // Stepping by hand pauses auto-play.
                     running = false;
-                    b.round();
+                    play_round(b, &mut flashes);
                 }
-                if running {
-                    timer += get_frame_time();
+                if batch_total > 1 {
+                    // Repeating: skip the animation and play as many rounds as
+                    // fit in a frame, starting the next game as each one ends.
+                    flashes.clear();
+                    let start = get_time();
+                    while running && get_time() - start < FRAME_BUDGET {
+                        if b.outcome() == Outcome::Ongoing {
+                            b.round();
+                            continue;
+                        }
+                        if !recorded {
+                            tally.record(b.outcome());
+                            recorded = true;
+                            batch_done += 1;
+                        }
+                        if batch_done < batch_total {
+                            *b = new_battle(&setup, &mut seed, tally.games());
+                            recorded = false;
+                        } else {
+                            running = false;
+                        }
+                    }
+                } else if running {
+                    timer += dt;
                     while timer >= ROUND_SECONDS {
                         timer -= ROUND_SECONDS;
-                        b.round();
+                        play_round(b, &mut flashes);
                     }
                 }
-                if b.outcome() != Outcome::Ongoing {
+                // A repeating batch ends its own games above; stopping here would
+                // pause it whenever a game finishes as the frame budget runs out.
+                if batch_total == 1 && b.outcome() != Outcome::Ongoing {
                     running = false;
+                    // Count each finished battle once.
+                    if !recorded {
+                        tally.record(b.outcome());
+                        recorded = true;
+                        batch_done += 1;
+                    }
                 }
-                let lines = battle_status(b, running);
-                if is_key_pressed(KeyCode::R) {
+                let lines = battle_status(b, running, batch_done, batch_total);
+                if is_key_pressed(KeyCode::S) {
                     battle = None;
+                    flashes.clear();
+                } else if is_key_pressed(KeyCode::R) {
+                    // Same army, fresh seed, already running; repeats start over.
+                    battle = Some(new_battle(&setup, &mut seed, tally.games()));
+                    running = true;
+                    recorded = false;
+                    batch_done = 0;
+                    batch_total = repeat_count;
+                    timer = 0.;
+                    flashes.clear();
                 }
                 lines
             }
         };
+        status.push(tally.summary());
 
         clear_background(BACKGROUND);
         draw_grid(&layout);
         match &battle {
-            Some(b) => draw_units(b.board(), &layout),
+            Some(b) => {
+                draw_units(b.board(), &layout);
+                draw_flashes(&flashes, &layout);
+            }
             None => {
                 draw_sides(&layout);
                 draw_units(setup.board(), &layout);
@@ -342,6 +568,37 @@ mod tests {
         assert_eq!(cell_at(&layout(), 100., 50.), Some((0, 0)));
         assert_eq!(cell_at(&layout(), 125., 63.), Some((1, 2)));
         assert_eq!(cell_at(&layout(), 419., 369.), Some((31, 31)));
+    }
+
+    #[test]
+    fn tally_counts_each_result_and_ignores_ongoing() {
+        let mut tally = Tally::default();
+        tally.record(Outcome::Won(Team::Red));
+        tally.record(Outcome::Won(Team::Red));
+        tally.record(Outcome::Won(Team::Blue));
+        tally.record(Outcome::Draw);
+        tally.record(Outcome::Ongoing);
+        assert_eq!(
+            tally,
+            Tally {
+                red: 2,
+                blue: 1,
+                draws: 1
+            }
+        );
+        assert_eq!(tally.games(), 4);
+    }
+
+    #[test]
+    fn tally_percentages() {
+        let mut tally = Tally::default();
+        // No games yet: no division by zero.
+        assert_eq!(tally.percent(0), 0);
+        tally.record(Outcome::Won(Team::Red));
+        tally.record(Outcome::Won(Team::Red));
+        tally.record(Outcome::Won(Team::Blue));
+        assert_eq!(tally.percent(tally.red), 67);
+        assert_eq!(tally.percent(tally.blue), 33);
     }
 
     #[test]
