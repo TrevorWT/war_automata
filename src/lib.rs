@@ -1,4 +1,5 @@
 mod board;
+mod rules;
 mod setup;
 mod unit;
 
